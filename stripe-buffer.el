@@ -125,7 +125,6 @@ Used by `stripe-table-mode' Only the first matching group will be painted."
            (* 2 stripe-height))
         ( draw-stripe
           (lambda (height)
-            ;; `region' available through dynamic binding
             (when (< (point) end)
               (let* (( stripe-region
                        (list (point)
@@ -174,13 +173,10 @@ Used by `stripe-table-mode' Only the first matching group will be painted."
       (mapc 'delete-overlay available))))
 
 (defun sb/redraw-window (&optional window &rest ignore)
-  (let* (( region (sb/window-limits window))
-         ( old-overlays (cl-remove-if-not
-                         (lambda (ov) (overlay-get ov 'is-stripe))
-                         (overlays-in (car region) (cdr region)))))
-    (setq sb/overlays (cl-set-difference sb/overlays old-overlays))
-    (sb/redraw-regions (list region) old-overlays)
-    ))
+  (unless (input-pending-p)
+    (let* (( region (sb/window-limits window)))
+      (mapc #'delete-overlay sb/overlays)
+      (sb/redraw-regions (list region) nil))))
 
 (defun sb/redraw-all-windows (&rest ignore)
   (sb/redraw-regions (sb/buffer-visible-regions-compressed)
@@ -245,7 +241,8 @@ Used by `stripe-table-mode' Only the first matching group will be painted."
                  (progn
                    (sb/redraw-all-windows)
                    (sb/cancel-timer))
-               (sb/set-timer 'sb/redraw-all-windows))
+               ;; (sb/set-timer 'sb/redraw-all-windows) ; why?????????????????
+               )
              (setq sb/modified-flag nil)))
          ( hooks `((after-change-functions . ,after-change)
                    (post-command-hook . ,post-command)
@@ -349,6 +346,76 @@ Used by `stripe-table-mode' Only the first matching group will be painted."
     ad-do-it
     (when was-stripe-buffer-mode
       (stripe-buffer-mode 1))))
+
+
+;; Bee stripes
+
+(defun bee-colors ()
+  (if (eq (frame-parameter (selected-frame) 'background-mode) 'light)
+      '((0   0   0)
+      	(0   150  0)
+      	(0   0   0)
+      	(150 88 0))
+    '((255   255   255)
+      (0   200  0)
+      (255   255   255)
+      (150 150 150))))
+
+(defvar bee-min-width 50)
+
+(defvar bee-step 10
+  "Length of intervals of equal color.")
+
+(defvar bee-skip t
+  "Whether to keep faces.")
+
+(defvar bee-overlay-priority 1)
+
+(defun bee/redraw-region (start end get-overlay-create-function)
+  (goto-char start)
+  (let* ((bee-colors (bee-colors))
+         (nbr-colors (length bee-colors))
+         (i (mod (line-number-at-pos) nbr-colors)))
+    (while (< (point) end)
+      (incf i)
+      (let ((bol (line-beginning-position))
+            (eol (line-end-position)))
+        (while (< (point) eol)
+          (let* ((point (point))
+                 (width (max bee-min-width (- eol bol)))
+                 (step  (max 1 (min bee-step (/ width 10))))
+                 (next-point (min eol
+                                  (+ step point)
+                                  (next-char-property-change point eol)))
+                 ov color)
+            (unless (and bee-skip
+                         (cl-some
+                          (lambda (face) (not (memq (face-foreground face nil t)
+                                               `(nil
+                                                 ,(face-attribute 'default :foreground)
+                                                 "unspecified-fg" "unspecified-bg"))))
+                          (cl-mapcan (lambda (face-or-list) (if (facep face-or-list)
+                                                           (list face-or-list)
+                                                         face-or-list))
+                                     (list
+                                      (get-text-property (point) 'face)
+                                      (get-text-property (point) 'font-lock-face)))))
+              (setq ov (funcall get-overlay-create-function point next-point))
+              (setq color
+                    (apply #'format "#%02x%02x%02x"
+                           (cl-mapcar
+                            (lambda (x y)
+                              (let* ((part (/ (- point bol) (float width)))
+                                     (part (* part (+ 1 (/ (- next-point point) (float width))))))
+                                (+ (* (- 1 part) x) (* part y))))
+                            (nth (mod i       nbr-colors) bee-colors)
+                            (nth (mod (+ 1 i) nbr-colors) bee-colors))))
+              (overlay-put ov 'face `((foreground-color . ,color)))
+              (overlay-put ov 'priority bee-overlay-priority)
+              (overlay-put ov 'is-stripe t)
+              (push ov sb/overlays))
+            (goto-char next-point))))
+      (when (< (point) end) (forward-char 1)))))
 
 (provide 'stripe-buffer)
 ;; Local Variables:
